@@ -1,0 +1,864 @@
+---
+title: "Depression and Associated Risk Factors: NHANES Data Analysis MATH70076-Assessment 2"
+author: "02051768"
+date: "2025-05-11"
+fontsize: 11pt
+geometry: margin=1in
+linkcolor: blue
+bibliography: report.bib
+output:
+  bookdown::pdf_document2:
+    keep_tex: true
+    extra_dependencies: ["physics", "bm"]
+    pandoc_args: --listings
+    includes:
+      in_header: preamble.tex
+---
+
+```{r setup, include=FALSE, message = FALSE}
+knitr::opts_chunk$set(echo = TRUE, tidy = TRUE)
+library(ggplot2)
+library(patchwork) 
+library(dplyr)
+library(forcats)
+library(MASS)
+library(broom)
+library(knitr)
+library(kableExtra)
+library(stringr)
+```
+
+
+\newpage
+
+# Background
+
+The aim of this report is to assess the relationship between depression and a range of influencing factors. We used data from the DEMO, DPQ, ALQ, SMQ, PAD, DIQ, and MCQ modules in NHANES, covering the survey years 2015–2018 and 2021–2023. The pandemic period (2019–2020) was deliberately excluded, as population-level mental health during that time may have been atypical due to public health policies and societal disruptions
+
+
+# Data Downloading & Cleaning
+
+The data was downloaded using the `nhanesA` package. It can also be accessed from the official website [NHANES](https://wwwn.cdc.gov/nchs/nhanes/). Data files from each selected year were merged into a single dataset (`combined_data`), retaining only variables that were consistently available across all years.
+
+To calculate the PHQ-9 total score (`PHQ_total`), we processed the DPQ section of the NHANES dataset, which records participants’ responses of nine items assessing depressive symptoms. Each item was recoded numerically according to the standard PHQ-9 scoring scheme: “Not at all” = 0, “Several days” = 1, “More than half the days” = 2, and “Nearly every day” = 3. Responses coded as “Refused” or “Don't know” were treated as missing values. The `PHQ_total` was then computed by summing the numeric values of the first nine items. This `PHQ_total` ranging from 0 to 27,presenting depression severity (higher scores representing more severe depressive symptoms). Then all data with missing value in `PHQ_total` were removed as `PHQ_total` is the key of the study.
+
+For the rest of the potentially correlated variables, we simply performed basic cleaning and converted them into a standard format. All categorical variables were converted to factors, and responses labeled “Refused” or “Don't Know” were recoded as missing values. For numerical variables, we applied as.numeric to ensure proper data types. After reviewing the data summary, we selected a subset of variables for further analysis based on their relevance, type, value distributions, and proportion of missing data. The final dataset includes: `gender`, `race`, (`edu`), `birth_country`, `military`, `heavy_drinker`, `ever_smoked`, `diabetes`,`has_asthma`, `hay_fever`, `has_liver`, `has_cancer`, `PHQ_total`, `age`, household size (`hh_size`), `drinks_per_day`, `sedentary_minutes`, and `poverty_ratio`. We also filtered out rows with missing values in variables that had low rates of missingness (specifically: `edu`, `birth_country`, `military`, `ever_smoked`, `PHQ_total`, `has_asthma`, `sedentary_minutes`, and `has_liver`). This helped us retain more data points and ensure the completeness of the selected variables. Now, we have the final data (`analysis_data`) for analysis.
+
+
+# Exploratory data analysis
+
+After basic preprocessing and reviewing the summary of `analysis_data`, the variables `drinks_per_day` and `hay_fever` were dropped due to their relatively high missing rates. We also redefined the reference categories of categorical variables to improve interpretability for the model. To handle missing values in `poverty_ratio`, we filled the NAs with its median after the EDA part, ensuring minimal distortion of its distribution. For the only two categorical variables with missing values (`heavy_drinker` and `diabetes`), we kept the NA values as a separate category.The non-response is treated as potentially informative as an evasive answer may also reflect the respondent’s attitude toward the question. What's more, we observed that Non-Hispanic White participants (n = 6522) take the majority of the sample, while some racial groups seems to be underrepresented. I also noticed the high concentration in higher education level so we combined the two lowest education categories into one group to simplify interpretation. 
+
+```{r , include=FALSE}
+# improt data and summary
+analysis_data <- readRDS("../data/processed/analysis_data.rds")
+summary(analysis_data)
+
+# choose the reference category for categorical variable
+analysis_data$race <- relevel(analysis_data$race, ref = "Non-Hispanic White")
+analysis_data$edu <- relevel(analysis_data$edu, ref = "College graduate or above")
+analysis_data$birth_country <- relevel(analysis_data$birth_country, ref = "US-born")
+
+# drop the variable with high missing rate
+analysis_data <- analysis_data[, !names(analysis_data) %in% c("drinks_per_day", "hay_fever")]
+
+```
+
+Firstly, the density plot below below shows that PHQ-9 scores are highly right-skewed, with most values concentrated near zero and a mean of 3.5. The majority of participants shows minimal depressive symptoms and the long tail presents a smaller subgroup experiencing moderate to severe symptoms.
+
+
+```{r plot_phq_density1,echo=FALSE, fig.width=6, fig.height=2.6}
+mean_phq <- mean(analysis_data$PHQ_total, na.rm = TRUE)
+theme_standard <- theme_minimal(base_size = 11) +
+  theme(
+    plot.title = element_text(size = rel(1.0), face = "bold"),
+    plot.subtitle = element_text(size = rel(0.9)),
+    axis.title = element_text(size = rel(0.9)),
+    axis.text = element_text(size = rel(0.8))
+  )
+
+ggplot(analysis_data, aes(x = PHQ_total)) +
+  geom_density(fill = "#5C88DA99", color = "#1f2d50", alpha = 0.7) +
+  geom_vline(xintercept = mean_phq, color = "red", linetype = "dashed", linewidth = 1) +
+  labs(
+    title = "Figure 1: Density Plot of PHQ Total Score",
+    subtitle = paste("Mean =", round(mean_phq, 2)),
+    x = "PHQ Total Score",
+    y = "Density"
+  ) +
+  theme_standard
+
+```
+
+
+## Categorical variables
+Now, let's focus on how multiple categorical variables relate to depression levels. The density plot of PHQ scores by gender (Figure 1) clearly shows that females tend to have higher average depression levels compared to males. The violin plot (Figure 2) indicates that participants with asthma generally have slightly higher PHQ-9 scores, with more values falling in the moderate-to-severe range compared to those without asthma.
+
+```{r plot_gender_Asthma,echo=FALSE, fig.width=6, fig.height=3}
+
+# Plot 2: Density by Gender
+p2 <- ggplot(analysis_data, aes(x = PHQ_total, fill = gender)) +
+  geom_density(alpha = 0.5) +
+  labs(title = "Figure 2: PHQ Total Score by Gender", x = "PHQ Total Score", y = "Density") +
+  theme_standard
+
+ggsave("../graph/F2_phq_density_by_gender.png", p2, width = 6, height = 4, dpi = 300)
+
+# Plot 2: Violin by Asthma
+p3 <- ggplot(analysis_data, aes(x = has_asthma, y = PHQ_total, fill = has_asthma)) +
+  geom_violin(trim = FALSE, alpha = 0.5) +
+  labs(title = "Figure 3: PHQ Total Score\nby Asthma Diagnosis", x = "Has Asthma", y = "PHQ Total") +
+  theme_standard+
+  theme(legend.position = "none")
+
+ggsave("../graph/F3_phq_by_asthma.png", p3, width = 6, height = 4, dpi = 300)
+
+
+print(p2 + p3)
+
+```
+
+According to the box plot below, heavy drinkers tend to show higher levels of depressive symptoms compared to others (Figure 4). Interestingly, there's a curious observation that resonates with a common belief in traditional Chinese medicine—that emotional disturbances are often linked to liver health. As shown in Figure 5, participants with liver conditions appear to have higher PHQ-9 scores on average.
+
+```{r plot_drink_liver,echo=FALSE, fig.width=7, fig.height=3.5}
+custom_colors <- c( "#CC0C0099", "#5C88DA99", "#84BD0099", "#FFCD0099", "#7C878E99", "#00B5E299", "#00AF6699")
+
+# Plot 4: Heavy Drinking
+p4 <- ggplot(analysis_data, aes(x = heavy_drinker, y = PHQ_total, fill = heavy_drinker)) +
+  geom_boxplot() +
+  scale_fill_manual(values = custom_colors[1:length(unique(na.omit(analysis_data$heavy_drinker)))]) +
+  labs(title = "Figure 4: PHQ Total Score\n by Heavy Drinking", x = "Heavy Drinker", y = "PHQ Total") +
+  theme_standard +
+  theme(legend.position = "none")
+
+ggsave("../graph/F4_phq_by_heavy_drinker.png", p4, width = 6, height = 4, dpi = 300)
+
+# Plot 5: Liver Condition
+p5 <- ggplot(analysis_data, aes(x = has_liver, y = PHQ_total, fill = has_liver)) +
+  geom_boxplot() +
+  scale_fill_manual(values = custom_colors[1:length(unique(na.omit(analysis_data$has_liver)))]) +
+  labs(title = "Figure 5: PHQ Total Score\n by Liver Condition", x = "Has Liver Condition", y = "PHQ Total") +
+  theme_standard +
+  theme(legend.position = "none")
+
+ggsave("../graph/F5_phq_by_liver.png", p5, width = 6, height = 4, dpi = 300)
+
+
+print(p4+p5)
+```
+
+The boxplot of PHQ total scores by race and the race distribution pie chart below are used to explore the relationship between race and depression levels. As shown in Figure 6, Non-Hispanic Asians appear to have the lowest levels of depressive symptoms on average. Interestingly, the group with the smallest population share—Other Race, Including Multi-Racial—shows relatively higher PHQ scores. This could be influenced by a range of factors such as identity-related stress, cultural marginalization, or limited access to mental health resources.
+
+```{r plot_race,echo=FALSE, fig.width=7, fig.height=3.5}
+
+# Plot 6: Race/Ethnicity
+#create race label for better vis
+analysis_data$race_label <- recode(analysis_data$race,
+  "Non-Hispanic White" = "Non\nHispanic\nWhite",
+  "Mexican American" = "Mexican\nAmerican",
+  "Non-Hispanic Asian" = "Non\nHispanic\nAsian",
+  "Non-Hispanic Black" = "Non\nHispanic\nBlack",
+  "Other Hispanic" = "Other\nHispanic",
+  "Other Race - Including Multi-Racial" = "Other Race\nMulti-Racial"
+)
+
+
+#boxplot
+p6_1 <- ggplot(analysis_data, aes(x = race_label, y = PHQ_total, fill = race_label)) +
+  geom_boxplot() +
+  scale_fill_manual(values = custom_colors[1:length(unique(analysis_data$race_label))]) +
+  labs(title = "Figure 6:PHQ Total Score by Race", x = "Race/Ethnicity", y = "PHQ Total") +
+  theme_standard +
+  theme(axis.text.x = element_text(angle = 0, hjust = 0.5),
+        legend.position = "none")
+
+
+#Pie Chart
+race_dist <- analysis_data %>%
+  count(race_label) %>%
+  mutate(percentage = round(100 * n / sum(n), 1),
+         label = paste0(race_label, "\n", percentage, "%"))
+
+p6_2 <- ggplot(race_dist, aes(x = "", y = n, fill = race_label)) +
+  geom_col(width = 1, color = "white") +
+  coord_polar(theta = "y") +
+  scale_fill_manual(values = custom_colors[1:nrow(race_dist)]) +
+  labs(title = "         Race Distribution") +
+  theme_void() +
+  theme_standard +
+  theme(
+    legend.position = "none",
+    axis.text = element_blank(),  
+    axis.title = element_blank(),
+    axis.ticks = element_blank(),       
+    panel.grid = element_blank()     
+  )
+
+
+(p6_1 | p6_2) + plot_layout(widths = c(1.7, 1))
+
+ggsave("../graph/F6_phq_by_race&pie.png", width = 6, height = 4, dpi = 300)
+
+```
+
+
+Using the similar analysis approach, we also explored the relationship between PHQ scores and other categorical variables. We found that participants who were born in the U.S., or who have diabetes or asthma, tend to report slightly higher levels of depressive symptoms. In contrast, PHQ scores appeared to show little or no association with variables such as `ever_smoked`, `education level`, `military service`, or `cancer diagnosis`.  A summary table of the variables showing notable differences is provided below for reference. This really surprised me, as these factors are commonly believed to be associated with depression risk, such as the PTSD experiences of military and the panic of patient. Here, we do not include the corresponding plots in the main body of this report, they can be found in the accompanying R script. The table below presents the remaining correlated variables and provides some basic insight into the selected features.
+
+```{r table,echo=FALSE}
+
+# Summarise by has_asthma
+asthma_summary <- analysis_data %>%
+  group_by(group = has_asthma) %>%
+  summarise(
+    count = n(),
+    mean_PHQ = round(mean(PHQ_total, na.rm = TRUE), 2),
+    median_PHQ = median(PHQ_total, na.rm = TRUE),
+    sd_PHQ = round(sd(PHQ_total, na.rm = TRUE), 2),
+    IQR_PHQ = IQR(PHQ_total, na.rm = TRUE)
+  ) %>%
+  mutate(variable = "Has Asthma")
+
+# Summarise by diabetes
+diabetes_summary <- analysis_data %>%
+  group_by(group = diabetes) %>%
+  summarise(
+    count = n(),
+    mean_PHQ = round(mean(PHQ_total, na.rm = TRUE), 2),
+    median_PHQ = median(PHQ_total, na.rm = TRUE),
+    sd_PHQ = round(sd(PHQ_total, na.rm = TRUE), 2),
+    IQR_PHQ = IQR(PHQ_total, na.rm = TRUE)
+  ) %>%
+  mutate(variable = "Diabetes")
+
+# Summarise by birth_country
+birth_summary <- analysis_data %>%
+  group_by(group = birth_country) %>%
+  summarise(
+    count = n(),
+    mean_PHQ = round(mean(PHQ_total, na.rm = TRUE), 2),
+    median_PHQ = median(PHQ_total, na.rm = TRUE),
+    sd_PHQ = round(sd(PHQ_total, na.rm = TRUE), 2),
+    IQR_PHQ = IQR(PHQ_total, na.rm = TRUE)
+  ) %>%
+  mutate(variable = "Birth Country")
+
+# Combine summaries
+combined_summary <- bind_rows(asthma_summary, diabetes_summary, birth_summary) %>%
+  dplyr::select(variable, group, count, mean_PHQ, median_PHQ, sd_PHQ, IQR_PHQ)
+
+# Display nicely
+kable(
+  combined_summary,
+  caption = "Summary Statistics of PHQ9 Scores",
+  digits = 2,
+  align = "l"
+)%>%
+  kableExtra::kable_styling(
+    latex_options = c("hold_position", "scale_down"),
+    full_width = FALSE
+  )
+
+```
+
+
+
+## Numerical variables
+
+We now turn to the effects of numerical variables on depression levels. In Figure 7, there appears to be an exponential relationship between sedentary time and PHQ-9 scores. The participants who report more sedentary minutes tend to have higher levels of depressive symptoms. In contrast, Figure 8 shows that participants with higher poverty ratios (indicating higher income relative to the poverty threshold) generally report lower depression scores, indicating that better socioeconomic conditions are associated with better mental health. Additionally, we observe that older participants tend to report lower levels of depressive symptoms.
+
+```{r plot_sedentary_poverty,echo=FALSE, message = FALSE, fig.width=7, fig.height=3.1}
+# sedentary_minutes
+p7 <- ggplot(analysis_data %>% filter(!is.na(sedentary_minutes), !is.na(PHQ_total)),
+             aes(x = sedentary_minutes, y = PHQ_total)) +
+  geom_point(alpha = 0.4) +
+  geom_smooth(method = "loess", color = "blue") +
+  labs(title = "Figure 7: PHQ Total vs Sedentary Minutes",
+       x = "Sedentary Minutes", y = "PHQ Total") +
+  theme_standard
+ggsave("../graph/F7_phq_by_sedentary.png", width = 6, height = 4, dpi = 300)
+
+
+# poverty_ratio
+p8 <- ggplot(analysis_data %>% filter(!is.na(poverty_ratio), !is.na(PHQ_total)),
+             aes(x = poverty_ratio, y = PHQ_total)) +
+  geom_point(alpha = 0.4) +
+  geom_smooth(method = "loess", color = "blue") +
+  labs(title = "Figure 8: PHQ Total vs Poverty Ratio",
+       x = "Poverty Ratio", y = "PHQ Total") +
+  theme_standard
+ggsave("../graph/F8_phq_by_poverty_ratio.png", width = 6, height = 4, dpi = 300)
+
+print(p7 + p8)
+
+```
+
+We also examined the relationship between PHQ scores and household size. The  boxplot of integer variable `hh_size` suggests that PHQ scores are relatively consistent across different household sizes. Given the lack of strong patterns in both cases and we do not consider them in model, this plots are not included in the main report but are available in the supplementary materials.
+
+
+## Variable Description
+
+**Following are the variables left after the EDA:**
+
+**Dependent variable (outcome):**
+
+- **PHQ_total**: Total score of the Patient Health Questionnaire-9 (PHQ-9), measuring depressive symptoms (range: 0–27).
+
+**Independent variables (predictors):**
+
+*The following variables are categorical:*
+
+- **gender**: Biological sex of the participant (Male or Female).
+- **race**: Self-identified race/ethnicity, categorized as Non-Hispanic White (reference), Non-Hispanic Black, Mexican American, Other Hispanic, Non-Hispanic Asian, or Other Race including Multi-Racial.
+- **birth_country**: Country of birth: “US-born” or “Foreign-born” (reference: US-born).
+- **heavy_drinker**: Whether consumed 4/5 or more alcoholic drinks per day in the past year (reference: No).
+- **diabetes**: Doctor-diagnosed diabetes status (reference: No).
+- **has_asthma**: History of asthma diagnosis (reference: No).
+- **has_liver**: History of liver condition (reference: No).
+
+*The following variables are numerical:*
+
+- **sedentary_minutes**: Minutes spent in sedentary activities on a typical day.
+- **poverty_ratio**: Ratio of family income to poverty level (higher poverty ratios indicates higher income relative to the poverty threshold).
+- **age**: Participant age at time of interview.
+
+
+
+```{r,include=FALSE}
+# fill the median for missing valuye
+analysis_data <- analysis_data %>%
+  mutate(poverty_ratio = ifelse(is.na(poverty_ratio),
+                                median(poverty_ratio, na.rm = TRUE),
+                                poverty_ratio))
+
+# Apply to each categorical variable, make NA as an answer
+analysis_data$heavy_drinker <- fct_explicit_na(as.factor(analysis_data$heavy_drinker), na_level = "NA")
+analysis_data$diabetes <- fct_explicit_na(as.factor(analysis_data$diabetes), na_level = "NA")
+```
+
+
+
+# Model building
+In this task, we aim to model the relationship between depressive symptoms and a set of demographic, behavioral, and health-related predictors. The goal is to identify significant associations and estimate the expected depression score given participants' characteristics.
+
+The dependent variable `PHQ_total` is a discrete, non-negative integer (ranging from 0 to 27) and most independent variables are either categorical or discrete numerical. Therefore, we consider discrete regression models, such as Poisson and Negative Binomial regression, to be appropriate starting points.
+
+We initially fit a Poisson regression model. However, the model showed poor performance: it gave a high AIC and a Pearson dispersion statistic of 4.83, indicating substantial overdispersion in the data. This against the Poisson assumption that the mean and variance are equal, and suggests that the Poisson model is not suitable for this dataset.
+
+\begin{align*}
+Y_i &\sim \text{Poisson}(\mu_i) \\
+\log(\mu_i) &= \beta_0 + \beta_1 \cdot \text{gender}_i + \beta_2 \cdot \text{race}_i + \beta_3 \cdot \text{birth\_country}_i \\
+&\quad + \beta_4 \cdot \text{heavy\_drinker}_i + \beta_5 \cdot \text{diabetes}_i + \beta_6 \cdot \text{has\_asthma}_i \\
+&\quad + \beta_7 \cdot \text{has\_liver}_i + \beta_8 \cdot \text{sedentary\_minutes}_i + \beta_9 \cdot \text{poverty\_ratio}_i+ \beta_10 \cdot \text{age}_i
+\end{align*}
+
+```{r possion,include=FALSE}
+model_pois <- glm(PHQ_total ~ gender + race + birth_country + heavy_drinker +
+    diabetes + has_asthma + has_liver +
+    sedentary_minutes + poverty_ratio + age, family = poisson, data = analysis_data)
+# Dispersion statistic
+dispersion <- sum(residuals(model_pois, type = "pearson")^2) / df.residual(model_pois)
+print(dispersion)
+```
+
+Due to the presence of overdispersion, both the quasi-Poisson and negative binomial models were considered. The quasi-Poisson model adjusts for overdispersion by scaling the standard errors so it does not support likelihood-based inference and cannot be used for formal model comparison. In contrast, the negative binomial model explicitly accounts for overdispersion and provides a valid likelihood framework, allowing for the use of information criteria such as AIC. Therefore, the negative binomial model was selected for further analysis. It can be seen that the AIC reduced significantly in negative binomial models compared to the Possion model.
+
+\begin{align*}
+Y_i &\sim \text{NegBin}(\mu_i, \theta) \\
+\log(\mu_i) &= \beta_0 + \beta_1 \cdot \text{gender}_i + \beta_2 \cdot \text{race}_i + \beta_3 \cdot \text{birth\_country}_i \\
+&\quad + \beta_4 \cdot \text{heavy\_drinker}_i + \beta_5 \cdot \text{diabetes}_i + \beta_6 \cdot \text{has\_asthma}_i \\
+&\quad + \beta_7 \cdot \text{has\_liver}_i + \beta_8 \cdot \text{sedentary\_minutes}_i + \beta_9 \cdot \text{poverty\_ratio}_i+ \beta_10 \cdot \text{age}_i
+\end{align*}
+
+
+```{r NegBin,echo=FALSE}
+# Fit negative binomial model
+model_nb <- glm.nb(
+  PHQ_total ~ gender + race + birth_country + heavy_drinker +
+    diabetes + has_asthma + has_liver +
+    sedentary_minutes + poverty_ratio +age,
+  data = analysis_data
+)
+
+
+# model list
+models0 <- list(
+  "Poisson model" = model_pois,
+  "Negative Binomial model" = model_nb
+)
+
+# AIC & degree of freedom
+aic_table0 <- purrr::map_df(models0, ~data.frame(
+  df = attr(logLik(.x), "df"),
+  AIC = AIC(.x)
+), .id = "Model")
+
+# tidy table
+knitr::kable(
+  aic_table0,
+  caption = "AIC Comparison between Poisson and Negative Binomial Models",
+  digits = 2,
+  align = "l"
+)%>%
+  kableExtra::kable_styling(
+    latex_options = c("hold_position", "scale_down"),
+    full_width = FALSE
+  )
+
+```
+
+
+To assess the contribution of individual predictors to the model, we examine the column $\Pr\left(|z| > z_{\text{obs}}\right)$ in the regression output. This value represents the p-value for the null hypothesis that a given coefficient equals zero. A lower p-value indicates stronger evidence against the null hypothesis and suggests that the variable is statistically significant.
+
+In this model, several levels of the categorical variables `race`, `heavy_drinker`, and `diabetes` shows relatively high p-values.This suggest that they may not significantly improve model fit. To evaluate the overall contribution of these variables, we fitted three sub models by excluding each variable separately, and compared their AIC values to the original full model. As shown in the table, the full model (model_nb) achieved the lowest AIC (68228.51), while all reduced model exhibited higher AICs. Therefore, we kept all three variable groups in the final model based on overall model fit, even though some individual coefficients within these variables were not statistically significant.
+
+
+```{r NegBinSuM, echo=FALSE, message=FALSE,warning=FALSE}
+# Extract, modify, and format
+summary_table <- broom::tidy(model_nb) %>%
+  mutate(
+    term = str_replace(term, "raceOther Race - Including Multi-Racial", "raceOther"),
+    p.value = format.pval(p.value, digits = 4, eps = .Machine$double.eps),
+    
+    sig = case_when(
+      as.numeric(p.value) < 0.001 ~ "***",
+      as.numeric(p.value) < 0.01  ~ "**",
+      as.numeric(p.value) < 0.05  ~ "*",
+      as.numeric(p.value) < 0.1   ~ ".",
+      TRUE                        ~ ""
+    )
+  )
+
+# Display table
+knitr::kable(
+  summary_table,
+  caption = "Summary of Negative Binomial Regression Coefficients",
+  digits = 4,
+  align = "l",
+  row.names = FALSE
+) %>%
+  kable_styling(
+    latex_options = c("hold_position", "scale_down"),
+    full_width = FALSE
+  )
+
+```
+
+
+```{r submodel,echo=FALSE}
+# Fit negative binomial model
+model_nb_race <- glm.nb(
+  PHQ_total ~ gender + birth_country + heavy_drinker +
+    diabetes + has_asthma + has_liver +
+    sedentary_minutes + poverty_ratio +age,
+  data = analysis_data
+)
+
+model_nb_heavy_drink <- glm.nb(
+  PHQ_total ~ gender + race + birth_country +
+    diabetes + has_asthma + has_liver +
+    sedentary_minutes + poverty_ratio +age,
+  data = analysis_data
+)
+
+model_nb_diabetes <- glm.nb(
+  PHQ_total ~ gender + race + birth_country + heavy_drinker +
+    has_asthma + has_liver +
+    sedentary_minutes + poverty_ratio +age,
+  data = analysis_data
+)
+
+```
+
+```{r nbSummary,include=FALSE}
+summary(model_nb)
+```
+
+
+```{r subCompare, echo=FALSE, message=FALSE,warning=FALSE}
+
+# list of models
+models <- list(
+  model_nb = model_nb,
+  model_nb_race = model_nb_race,
+  model_nb_heavy_drink = model_nb_heavy_drink,
+  model_nb_diabetes = model_nb_diabetes
+)
+
+# Extract df and AIC
+aic_df <- purrr::map_df(models, function(m) {
+  data.frame(df = attr(logLik(m), "df"), AIC = AIC(m))
+}, .id = "Model")
+
+
+kable(aic_df, caption = "Negative Binomial Models Comparesion")%>%
+  kableExtra::kable_styling(
+    latex_options = c("hold_position", "scale_down"),
+    full_width = FALSE
+  )%>%
+  kableExtra::kable_styling(
+    latex_options = c("hold_position", "scale_down"),
+    full_width = FALSE
+  )
+
+
+```
+\newpage
+
+# Model Refinement with Interactions
+
+## Interaction visualization
+
+To further improve the model and capture potential effect, we explored plausible interaction terms between key demographic and behavioral variables. Specifically, we generate relative plots to visually assess whether the association between individual predictors and depressive symptoms differs across relevant subgroups.
+
+The interaction plots below suggest that gender moderates the effects of both sedentary time and age on depressive symptoms. Specifically, PHQ scores increase with sedentary minutes for both males and females, but the rise is sharper for females. Similarly, while depression scores decline with age in both sexes, females consistently report higher levels, and the decline is steeper in males with more waves. These patterns indicate that the effects of sedentary behavior and age on depression may vary by gender.
+
+```{r interaction,echo=FALSE, message = FALSE, fig.width=7, fig.height=3.2}
+
+# p8: Gender × Sedentary Minutes
+p8 <- ggplot(analysis_data %>% filter(!is.na(sedentary_minutes), !is.na(PHQ_total)),
+             aes(x = sedentary_minutes, y = PHQ_total, color = gender)) +
+  geom_smooth(method = "loess", se = FALSE) +
+  labs(title = "Figure 8: Interaction \n Gender × Sedentary Minutes",
+       x = "Sedentary Minutes", y = "PHQ Total") +
+  theme_standard
+
+ggsave("../graph/F8_gender_by_sedentary.png", plot = p8, width = 6, height = 4, dpi = 300)
+
+
+# p9: Gender × Age
+p9 <- ggplot(analysis_data %>% filter(!is.na(age), !is.na(PHQ_total)),
+             aes(x = age, y = PHQ_total, color = gender)) +
+  geom_smooth(method = "loess", se = FALSE) +
+  labs(title = "Figure 9: Interaction \n Gender × Age",
+       x = "Age", y = "PHQ Total") +
+  theme_standard
+
+ggsave("../graph/F9_gender_by_age.png", plot = p9, width = 6, height = 4, dpi = 300)
+
+print(p8 + p9)
+```
+
+
+In contrast, the interaction between asthma status and age presents a different pattern. Individuals with asthma seem to have increasing depressive symptoms until middle age, followed by a decline. Whereas those without asthma show a more consistent decrease in depression across age. This suggests that asthma may amplify age-related differences in depressive symptoms.
+
+
+```{r interaction2,echo=FALSE, message = FALSE, fig.width=7, fig.height=3.2}
+# Has Asthma × Age
+p10 <- ggplot(analysis_data %>% filter(!is.na(age), !is.na(PHQ_total), !is.na(has_asthma)),
+              aes(x = age, y = PHQ_total, color = has_asthma)) +
+  geom_smooth(method = "loess", se = FALSE) +
+  labs(title = "Figure 10: Interaction - Has Asthma × Age",
+       x = "Age", y = "PHQ Total") +
+  theme_standard
+
+ggsave("../graph/F10_asthma_by_age.png", plot = p10, width = 6, height = 4, dpi = 300)
+
+print(p10)
+```
+
+
+## Model with interaction
+According to these findings, we proceed to formally include the identified interaction terms in the regression model. Specifically, we include three interaction terms: $gender \times sedentary\_minutes$, $gender \times age$, and $has\_asthma \times age$. These interactions are added to the full Negative Binomial model to capture potential effect modification and improve model fit.
+
+The resulting model is expressed as:
+  
+
+\begin{align*}
+Y_i &\sim \text{NegBin}(\mu_i, \theta) \\
+\log(\mu_i) &= \beta_0 
++ \beta_1 \cdot \text{gender}_i 
++ \beta_2 \cdot \text{race}_i 
++ \beta_3 \cdot \text{birth\_country}_i 
++ \beta_4 \cdot \text{heavy\_drinker}_i \\
+&\quad + \beta_5 \cdot \text{diabetes}_i 
++ \beta_6 \cdot \text{has\_asthma}_i 
++ \beta_7 \cdot \text{has\_liver}_i 
++ \beta_8 \cdot \text{sedentary\_minutes}_i \\
+&\quad + \beta_9 \cdot \text{poverty\_ratio}_i 
++ \beta_{10} \cdot \text{age}_i 
++ \beta_{11} \cdot \text{gender}_i \cdot \text{sedentary\_minutes}_i \\
+&\quad + \beta_{12} \cdot \text{gender}_i \cdot \text{age}_i
++ \beta_{13} \cdot \text{has\_asthma}_i \cdot \text{age}_i
+\end{align*}
+
+
+To assess the impact of interaction terms on model performance, we first fitted a full Negative Binomial model (`model_nb_interact3`) including all three interactions: $gender \times sedentary\_minutes$, $gender \times age$, and $has\_asthma \times age$. However, the first and third interactions showed high p-values ($\Pr(|z| > z_{\text{obs}})$), indicating limited statistical significance. We therefore fitted a reduced model (`model_nb_interact1`) retaining only the $gender \times age$ interaction. AIC comparisons showed that this simpler model achieved the lowest AIC, suggesting improved fit with fewer parameters. As a result, we chose to retain only the $gender \times age$ interaction in the final model.
+
+
+```{r,include=FALSE}
+model_nb_interact3 <- glm.nb(
+  PHQ_total ~ gender * sedentary_minutes + 
+    gender * age + 
+    has_asthma * age +
+    race + birth_country + heavy_drinker + 
+    diabetes + has_liver + poverty_ratio,
+  data = analysis_data
+)
+
+summary(model_nb_interact3)
+
+
+
+model_nb_interact1 <- glm.nb(
+  PHQ_total ~ sedentary_minutes + 
+    gender * age + 
+    has_asthma+
+    race + birth_country + heavy_drinker + 
+    diabetes + has_liver + poverty_ratio,
+  data = analysis_data
+)
+```
+
+
+```{r table4,echo=FALSE}
+
+models1 <- list(
+  "Full model" = model_nb,
+  "Model with all three interactions" = model_nb_interact3,
+  "Model with one interactions (gender * age)" = model_nb_interact1
+)
+
+aic_table1 <- purrr::map_df(models1, ~data.frame(
+  df = attr(logLik(.x), "df"),
+  AIC = AIC(.x)
+), .id = "Model")
+
+knitr::kable(
+  aic_table1,
+  caption = "Negative Binomial Models Comparison with Interaction Terms",
+  digits = 2,
+  align = "l"
+)%>%
+  kableExtra::kable_styling(
+    latex_options = c("hold_position", "scale_down"),
+    full_width = FALSE
+  )
+
+```
+
+Now the model becomes:
+\begin{align*}
+Y_i &\sim \text{NegBin}(\mu_i, \theta) \\
+\log(\mu_i) &= \beta_0 
++ \beta_1 \cdot \text{gender}_i 
++ \beta_2 \cdot \text{race}_i 
++ \beta_3 \cdot \text{birth\_country}_i 
++ \beta_4 \cdot \text{heavy\_drinker}_i \\
+&\quad + \beta_5 \cdot \text{diabetes}_i 
++ \beta_6 \cdot \text{has\_asthma}_i 
++ \beta_7 \cdot \text{has\_liver}_i 
++ \beta_8 \cdot \text{sedentary\_minutes}_i \\
+&\quad + \beta_9 \cdot \text{poverty\_ratio}_i 
++ \beta_{10} \cdot \text{age}_i 
++ \beta_{11} \cdot \text{gender}_i \cdot \text{age}_i
+\end{align*}
+
+
+
+# Model Diagnostics
+
+## Goodness of fit
+
+To assess overall model fit, we evaluated the fit of the final Negative Binomial model using residual deviance, AIC, and log-likelihood. The model also achieved the lowest AIC (68,224.95) among all candidate models considered, reflecting an optimal balance between explanatory power and model complexity. Additionally, the log-likelihood (–34,093.47) further ensusing the model's adequacy in capturing the observed variation in depressive symptom scores.
+
+\newpage
+
+```{r goodfit, echo=FALSE}
+# Extract values
+resid_dev <- deviance(model_nb_interact1)
+df_resid <- df.residual(model_nb_interact1)
+dev_df_ratio <- resid_dev / df_resid
+aic_val <- AIC(model_nb_interact1)
+loglik_val <- logLik(model_nb_interact1)
+
+# Create data frame
+fit_table <- data.frame(
+  Metric = c("Residual Deviance", "Degrees of Freedom", 
+             "Deviance / DF", "AIC", "Log-Likelihood"),
+  Value = c(
+    round(resid_dev, 2),
+    df_resid,
+    round(dev_df_ratio, 4),
+    round(aic_val, 2),
+    round(loglik_val, 2)
+  )
+)
+
+# Display as table
+knitr::kable(
+  fit_table,
+  caption = "Model Fit Statistics for Negative Binomial Regression",
+  align = "lr",
+  digits = 4
+) %>%
+  kableExtra::kable_styling(
+    latex_options = c("hold_position", "scale_down"),
+    full_width = FALSE
+  )
+
+```
+
+## Residual Diagnostics
+Figure below shows diagnostic plots used to assess the model's residual behavior and potential influential observations. The Pearson residuals appear randomly scattered around zero, suggesting no major patterns or violations of model assumptions. 
+
+The fitted vs. observed plot shows that the model generally captures the increasing trend in depressive symptom scores, but with substantial variability. While many points cluster around the diagonal line at lower fitted values, the spread increases as PHQ scores raise, which is typical for overdispersed count data (might caused by fewer participants report severe symptoms). This suggests that the model performs reasonably well in aggregate but has limited precision for individual predictions, especially at the upper range of the outcome. 
+
+```{r Residuals1,echo=FALSE,message=FALSE, fig.width=7, fig.height=3}
+# Residuals
+df_diag <- data.frame(
+  index = 1:nrow(analysis_data),
+  pearson = residuals(model_nb_interact1, type = "pearson"),
+  deviance = residuals(model_nb_interact1, type = "deviance"),
+  fitted = fitted(model_nb_interact1),
+  observed = analysis_data$PHQ_total,
+  cooks = cooks.distance(model_nb_interact1)
+)
+
+# 1. Pearson residuals vs. index
+pR1 <- ggplot(df_diag, aes(x = index, y = pearson)) +
+  geom_point(alpha = 0.4, color = "#5C88DA", size = 0.7) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  theme_standard+
+  labs(title = "Pearson Residuals", x = "Observation Index", y = "Residual")
+
+# 2. Fitted vs Observed
+pR2 <- ggplot(df_diag, aes(x = fitted, y = observed)) +
+  geom_point(alpha = 0.4, color = "#84BD00", size = 0.7) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "red") +
+  theme_standard+
+  labs(title = "Fitted vs Observed", x = "Fitted Values", y = "Observed PHQ_total")
+
+print(pR1 + pR2)
+ggsave("../graph/Pearson_Fitted.png", width = 6, height = 4, dpi = 300)
+
+```
+The QQ plot shows moderate deviation from the reference line, especially in the tails, suggesting some departure from the assumed residual distribution. However, for count data, this level of deviation is generally acceptable.
+
+The Cook’s distance plot shows that most observations have very low influence on the model. A small number of points lie above the common threshold, suggesting they may have mild influence, but none appear extreme. Overall, no strong outliers dominate the model fit.
+
+
+```{r Residuals2,echo=FALSE,message=FALSE, fig.width=7, fig.height=3}
+
+# 3. QQ plot of deviance residuals
+pR3 <- ggplot(df_diag, aes(sample = deviance)) +
+  stat_qq(alpha = 0.4, color = "#FFCD00", size = 0.7) +
+  stat_qq_line(color = "red") +
+  theme_standard+
+  labs(title = "QQ Plot of Deviance Residuals")
+
+# 4. Cook's Distance
+pR4 <- ggplot(df_diag, aes(x = index, y = cooks)) +
+  geom_point(alpha = 0.4, color = "#00B5E2", size = 0.7) +
+  geom_hline(yintercept = 4 / nrow(df_diag), linetype = "dashed", color = "red") +
+  theme_standard+
+  labs(title = "Cook's Distance", y = "Cook's D", x = "Observation Index")
+
+
+print(pR3 + pR4)
+ggsave("../graph/QQ_cook.png", width = 6, height = 4, dpi = 300)
+
+```
+
+# Model Interpretation via IRR
+
+To interpret the fitted negative binomial regression model, we exponentiate the estimated regression coefficients to obtain the Incidence Rate Ratios (IRRs). The IRR represents the multiplicative effect of a one-unit increase in a predictor on the expected count of the outcome variable (PHQ-9 total score), holding all other variables constant. For each predictor, a 95% confidence interval is also calculated by $\text{CI}_{95\%} = \exp\left( \hat{\beta} \pm 1.96 \cdot \text{SE} \right)$, indicating the range within which the true IRR is likely to fall. If this interval does not include 1, the predictor is considered statistically significant, meaning it has a meaningful association with the outcome. In the following section, we interpret the IRRs for each variable in the model to understand their effect on depression severity.
+
+
+```{r irr, echo=FALSE, message=FALSE}
+# Compute IRRs and CIs
+IRRs <- exp(coef(model_nb_interact1))
+confint_vals <- exp(confint(model_nb_interact1))
+
+irr_table <- data.frame(
+  IRR = round(IRRs, 3),
+  CI_lower = round(confint_vals[, 1], 3),
+  CI_upper = round(confint_vals[, 2], 3)
+)
+
+print(irr_table)
+```
+
+
+**(Intercept)**: When all predictors are at their reference level or zero, the expected count of the PHQ-9 score is 5.432 times higher than the baseline (which is 1 under the log-link function).
+
+**sedentary_minutes**: For each additional minute of sedentary time, the expected PHQ-9 score increases only slightly. However, this may still be meaningful in aggregate, as the variable's scale is large.
+
+**genderMale**:Males have an expected PHQ-9 score that is 17% lower than females on average. This effect is statistically significant.
+
+**age**: For each 1 year increase in age, the expected PHQ-9 score decreases by 0.5%, holding all else constant
+
+**has_asthmaYes**: Participants with asthma have PHQ-9 scores that are 29.5% higher than those without asthma. This is statistically significant.
+
+**raceMexican American**: Mexican American individuals are expected to have PHQ-9 scores that are 11.2% lower than Non-Hispanic White individuals, holding all else constant. This is statistically significant.
+
+**raceNon-Hispanic Asian**: Non-Hispanic Asian participants have PHQ-9 scores that are 22.7% lower than Non-Hispanic Whites. There is strong evidence of significantly lower depression scores in this group.
+
+**raceNon-Hispanic Black**: Non-Hispanic Black individuals have PHQ-9 scores that are 17.0% lower than Non-Hispanic Whites. This is statistically significant.
+
+**raceOther Hispanic**: Other Hispanic participants have PHQ-9 scores that are 5.8% higher than Non-Hispanic Whites. This is not statistically significant.
+
+**raceOther Race - Including Multi-Racial**: This group shows PHQ-9 scores that are 7.6% higher than Non-Hispanic Whites. This is not statistically significant.
+
+**birth_countryForeign-born**: Participants born outside the U.S. have PHQ-9 scores that are 12.6% lower than U.S.-born individuals, adjusting for other variables. This effect is statistically significant.
+
+**heavy_drinkerYes**: Heavy drinkers have PHQ-9 scores that are 55.5% higher than non-heavy drinkers. This is a strong and statistically significant effect.
+
+**heavy_drinkerNA**: Participants with missing alcohol data have PHQ-9 scores that are 9.8% lower than the reference group. This is statistically significant. The missing values for variables such as diabetes status might be caused by a lack of medical knowledge or absence of formal diagnosis. While questions about alcohol consumption are typically within personal awareness. Therefore, refusal or omission in this case may represent a deliberate choice rather than ignorance, potentially reflecting discomfort and denial bias.
+
+**diabetesYes**: People with diabetes have PHQ-9 scores that are 31.7% higher than those without diabetes. There is a strong and significant association.
+
+**diabetesNA**:  Participants with missing diabetes status have PHQ-9 scores that are 19.6% higher than the reference group. Unlike the alcohol variable, the missing value here may reflect a lack of knowledge rather than participant choice.
+
+**has_liverYes**: Participants reporting liver conditions have PHQ-9 scores that are 41% higher than those without. This is statistically significant.
+
+**poverty_ratio**: For every unit increase in poverty ratio (i.e., higher income relative to the poverty line), PHQ-9 scores decrease by approximately 12.2%. This suggests that higher socioeconomic status is strongly protective against depressive symptoms.
+
+**genderMale:age**: This interaction indicates that as age increases, the difference in depression between males and females narrows slightly. Specifically, each additional year reduces the male–female difference by about 0.3%. This effect is not statistically significant.
+
+# Limitations and Next Steps
+
+This analysis has several limitations that should be acknowledged. First, due to the limited number of common variables across NHANES cycles and a high rate of item non-response, the usable sample size was reduced. This highly affects the statistical power and generalizability. We could consider including more relevant variables from other NHANES modules (e.g., dietary, physical exam, blood data). We can also consider imputation techniques to handle missing data more robustly.
+
+Second, extending the study period (e.g., 2005–2020) could improve sample size and representativeness. However, this might result in fewer common variables across years. We need careful trade-offs between these aspects.
+
+Third, we observed overdispersion in the PHQ-9 score distribution and a strong concentration of values between 0 and 3. This highly influences the accuracy of the developed model. One possible solution is to stratify the population into binary or ordinal outcome groups and apply logistic or ordinal regression. Alternatively, we can also trim or exclude the participants with very low PHQ scores and focus on modeling moderate to severe symptoms. This can yield more stable estimates of associated risk factors.
+
+As a follow-up, we re-fitted the model after excluding data with PHQ-9 scores lower than 4. Without the large noise from floor effects, the estimates for most predictors became more stable and interpretable. Additionally, the model's AIC was significantly reduced, suggesting improved overall fit. However, the reduced sample size may limit statistical power and increase uncertainty in the estimates. Future work could further explore stratified modeling or appropriate thresholding methods while ensuring adequate sample representation
+
+```{r phqdata3, echo=FALSE}
+# creat subset of analysis_data with all phq score greater than 3
+analysis_data_sub <- analysis_data %>%
+  filter(PHQ_total > 3)
+
+# final model with new dataset
+model_nb_interact_sub <- glm.nb(
+  PHQ_total ~ sedentary_minutes + 
+    gender * age + 
+    has_asthma +
+    race + birth_country + heavy_drinker + 
+    diabetes + has_liver + poverty_ratio,
+  data = analysis_data_sub
+)
+
+tibble(
+  Metric = c("AIC", "Residual Deviance", "Null Deviance", "Deviance / DF"),
+  Value = c(
+    model_nb_interact_sub$aic,
+    model_nb_interact_sub$deviance,
+    model_nb_interact_sub$null.deviance,
+    round(model_nb_interact_sub$deviance / model_nb_interact_sub$df.residual, 3)
+  )
+) %>%
+  kable(caption = "Model Fit Summary for Subset (PHQ > 3)", digits = 2) %>%
+  kable_styling(full_width = FALSE, latex_options = "hold_position")
+
+```
+
+Fourth, many of the identified covariates may only affect moderate to severe depression. This lack of effect in the lower PHQ range may dilute the observed associations when using a single regression model across all PHQ levels. 
+
+Lastly, because the primary goal of this analysis was explanatory rather than predictive, we did not split the dataset into training and testing sets. Instead, we relied on model diagnostics (e.g., residual plots, AIC, dispersion statistics) to assess fit and guide model selection. However, future studies focused on prediction should evaluate generalizability using cross-validation or holdout testing.
+
+
+# References
+
+
